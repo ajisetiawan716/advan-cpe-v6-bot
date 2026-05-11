@@ -1,6 +1,6 @@
 # 🤖 Advan CPE V6 Telegram Bot
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/ajisetiawan716/advan-cpe-v6-bot-bot/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/ajisetiawan716/advan-cpe-v6-bot/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D16-brightgreen.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-OpenWrt-orange.svg)](https://openwrt.org)
