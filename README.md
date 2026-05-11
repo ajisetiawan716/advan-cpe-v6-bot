@@ -133,11 +133,11 @@ uci commit advan_bot
 # Start bot
 ```bash
 /etc/init.d/advan-bot start
-/etc/init.d/advan-bot status```
-
+/etc/init.d/advan-bot status
+```
 ---
 
-### Via Auto Installer
+### Via Installer Script
 
 # Download installer
 ```bash
