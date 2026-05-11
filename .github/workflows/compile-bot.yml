@@ -24,24 +24,35 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       current_version: ${{ steps.current_version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
-      - name: Read version
+      - name: Read PKG_VERSION from Makefile
         id: version
+        shell: bash
         run: |
           V=$(grep 'PKG_VERSION:=' ./Makefile | awk -F '=' '{gsub(/[ \t]/,"",$2); print $2}')
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "New: $V"
+          echo "New Version: $V"
 
-      - uses: actions/checkout@v4
+      - name: Checkout package branch
+        uses: actions/checkout@v4
         with:
           ref: package
 
       - name: Read current version
         id: current_version
+        shell: bash
         run: |
-          CV=$(cat ./main/version 2>/dev/null | head -1 | sed 's/^v//' || echo "0")
+          if [ -f "./${{ github.ref_name }}/version" ]; then
+            CV=$(sed -n '1p' "./${{ github.ref_name }}/version" | awk -F 'v' '{print $2}')
+          else
+            CV=0
+          fi
           echo "version=$CV" >> "$GITHUB_OUTPUT"
+          echo "Current Version: $CV"
 
   compile:
     runs-on: ubuntu-latest
@@ -49,79 +60,115 @@ jobs:
     if: ${{ needs.get_version.outputs.version != needs.get_version.outputs.current_version }}
     env:
       PKG_NAME: advan-bot
-      SDK_URL: https://downloads.openwrt.org/releases/24.10.2/targets/x86/64/openwrt-sdk-24.10.2-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+      SDK_IPK_URL: https://downloads.openwrt.org/releases/24.10.2/targets/x86/64/openwrt-sdk-24.10.2-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Install prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          sudo apt-get -y install wget xz-utils zstd tar
+          sudo apt-get update
+          sudo apt-get -y install git curl wget ca-certificates xz-utils zstd bzip2 tar build-essential \
+                                  python3 rsync file
 
-      - name: Setup dirs
+      - name: Prep dirs (outside repo)
         run: |
-          echo "TMPDIR=${{ runner.temp }}/sdk" >> "$GITHUB_ENV"
-          echo "OUTDIR=${{ runner.temp }}/out" >> "$GITHUB_ENV"
-          mkdir -p "${{ runner.temp }}/sdk" "${{ runner.temp }}/out"
+          echo "TMPDIR=$GITHUB_WORKSPACE/../tmp"  >> "$GITHUB_ENV"
+          echo "OUTDIR=$GITHUB_WORKSPACE/../_out" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/../tmp" "$GITHUB_WORKSPACE/../_out"
 
-      - name: Download & extract SDK
+      - name: Download & extract SDK (IPK / stable)
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$TMPDIR"
-          wget -q "$SDK_URL" -O sdk.tar.zst
-          tar --zstd -xf sdk.tar.zst
-          mv openwrt-sdk-* SDK
 
-      - name: Copy package to SDK
+          URL="${{ env.SDK_IPK_URL }}"
+          FN="$(basename "$URL")"
+          echo "Downloading (IPK): $URL"
+          wget -q -O "$FN" "$URL"
+
+          case "$FN" in
+            *.tar.zst|*.zst)    tar --zstd -xf "$FN" ;;
+            *.tar.xz|*.xz)      tar -xJf "$FN" ;;
+            *.tar.gz|*.tgz)     tar -xzf "$FN" ;;
+            *.tar.bz2|*.tbz2)   tar -xjf "$FN" ;;
+            *.tar)              tar -xf  "$FN" ;;
+            *) echo "Unknown archive format: $FN" >&2; exit 2 ;;
+          esac
+
+          SDKDIR="$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n1)"
+          [ -n "$SDKDIR" ] || { echo "SDK dir not found after extract"; ls -la; exit 3; }
+          mv "$SDKDIR" SDK_IPK
+
+      - name: Prepare minimal feeds & link package (IPK)
         run: |
-          rsync -av --exclude='.git' --exclude='node_modules' \
-                --exclude='.github' --exclude='*.ipk' \
-                "$GITHUB_WORKSPACE/" "$TMPDIR/SDK/package/$PKG_NAME/"
+          set -eux
+          cd "$TMPDIR/SDK_IPK"
+          ./scripts/feeds update luci
+          rm -rf package/$PKG_NAME
+          ln -s "$GITHUB_WORKSPACE" "package/$PKG_NAME"
+          make defconfig
 
-      - name: Build (SKIP feeds, direct compile)
+      - name: Build (IPK / stable) - only this package
         run: |
-          cd "$TMPDIR/SDK"
-          # TIDAK PERLU feeds update/install
-          # Langsung compile paket saja (tidak ada dependensi compile)
-          make package/$PKG_NAME/compile -j$(nproc) V=s IGNORE_ERRORS=1 2>&1 || {
-            echo "Checking if package was built..."
-            find bin -name "${PKG_NAME}_*.ipk" 2>/dev/null
-          }
+          set -eux
+          cd "$TMPDIR/SDK_IPK"
+          make package/$PKG_NAME/compile -j$(nproc) V=sc
 
-      - name: Collect artifacts
+      - name: Collect artifacts (.ipk) - only advan-bot
+        id: collect
         run: |
-          find "$TMPDIR/SDK/bin" -name "${PKG_NAME}_*.ipk" -exec cp -v {} "$OUTDIR"/ \;
-          ls -lh "$OUTDIR/" || echo "No IPK found"
-          test -f "$OUTDIR"/*.ipk || { echo "ERROR: No IPK!"; exit 1; }
+          set -eux
+          find "$TMPDIR/SDK_IPK/bin" -type f -name "advan-bot_*.ipk" -exec cp -v {} "$OUTDIR"/ \; || true
+          ls -lh "$OUTDIR" || true
+          echo "count=$(ls -1 "$OUTDIR"/* 2>/dev/null | wc -l || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: advan-bot-${{ needs.get_version.outputs.version }}
-          path: ${{ runner.temp }}/out/*.ipk
-          retention-days: 30
-
-      - uses: actions/checkout@v4
-        with:
-          ref: package
-
-      - name: Publish to package/main
+      - name: Assert artifacts exist
         run: |
-          mkdir -p ./main
-          rm -f ./main/${PKG_NAME}_*.ipk
-          echo "v${{ needs.get_version.outputs.version }}" > ./main/version
-          cp -v "$OUTDIR"/*.ipk ./main/
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add .
-          git commit -m "v${{ needs.get_version.outputs.version }}" || echo "No changes"
-          git push
+          test -d "$OUTDIR" || { echo "No OUTDIR"; exit 1; }
+          ls "$OUTDIR"/advan-bot_*.ipk 2>/dev/null || { echo "No advan-bot ipk found"; exit 1; }
 
-      - name: Create Release
+      - name: Create GitHub Release (upload .ipk)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: bot-v${{ needs.get_version.outputs.version }}
-          name: Bot v${{ needs.get_version.outputs.version }}
-          files: ${{ runner.temp }}/out/*.ipk
+          tag_name: v${{ needs.get_version.outputs.version }}
+          name: v${{ needs.get_version.outputs.version }}
+          files: |
+            ${{ env.OUTDIR }}/advan-bot_*.ipk
           generate_release_notes: true
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Switch to package branch
+        uses: actions/checkout@v4
+        with:
+          ref: package
+          clean: true
+
+      - name: Publish artifacts to package/dev and package/main
+        run: |
+          set -eux
+          for DEST in dev main; do
+            mkdir -p "./$DEST"
+            rm -f "./$DEST/${{ env.PKG_NAME }}*.ipk" || true
+            echo "v${{ needs.get_version.outputs.version }}" > "./$DEST/version"
+            cp -v "$OUTDIR"/advan-bot_*.ipk "./$DEST/" 2>/dev/null || true
+          done
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit -m "Auto Package Update: v${{ needs.get_version.outputs.version }}" || true
+          git push
+
+      - name: Cleanup OUTDIR
+        if: always()
+        run: |
+          rm -rf "$OUTDIR" || true
