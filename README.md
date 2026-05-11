@@ -85,7 +85,11 @@ Telegram Bot untuk manajemen dan monitoring modem **Advan CPE V6** secara remote
 ---
 
 ## 📸 Screenshot
+![Screenshot_1](https://raw.githubusercontent.com/ajisetiawan716/advan-cpe-v6-bot/main/assets/screenshot/1.png)
 
+![Screenshot_2](https://raw.githubusercontent.com/ajisetiawan716/advan-cpe-v6-bot/main/assets/screenshot/2.png)
+
+![Screenshot_3](https://raw.githubusercontent.com/ajisetiawan716/advan-cpe-v6-bot/main/assets/screenshot/3.png)
 
 
 ---
