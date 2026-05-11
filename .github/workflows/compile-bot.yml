@@ -1,0 +1,165 @@
+name: Compile Advan CPE V6 Bot IPK
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - 'index.js'
+      - 'package.json'
+      - 'handlers/**'
+      - 'modem/**'
+      - 'utils/**'
+      - 'sessions/**'
+      - 'files/**'
+      - 'Makefile'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  get_version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      current_version: ${{ steps.current_version.outputs.version }}
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Read PKG_VERSION from Makefile
+        id: version
+        shell: bash
+        run: |
+          V=$(grep 'PKG_VERSION:=' ./Makefile | awk -F '=' '{gsub(/[ \t]/,"",$2); print $2}')
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "New Version: $V"
+
+      - name: Checkout package branch
+        uses: actions/checkout@v4
+        with:
+          ref: package
+
+      - name: Read current version
+        id: current_version
+        shell: bash
+        run: |
+          if [ -f "./main/version" ]; then
+            CV=$(sed -n '1p' "./main/version" | sed 's/^v//')
+          else
+            CV=0
+          fi
+          echo "version=$CV" >> "$GITHUB_OUTPUT"
+          echo "Current Version: $CV"
+
+  compile:
+    runs-on: ubuntu-latest
+    needs: get_version
+    if: ${{ needs.get_version.outputs.version != needs.get_version.outputs.current_version }}
+    env:
+      PKG_NAME: advan-bot
+      SDK_URL: https://downloads.openwrt.org/releases/24.10.2/targets/x86/64/openwrt-sdk-24.10.2-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install git curl wget xz-utils zstd tar \
+                                  build-essential file rsync
+
+      - name: Prep directories
+        run: |
+          echo "TMPDIR=${{ runner.temp }}/sdk" >> "$GITHUB_ENV"
+          echo "OUTDIR=${{ runner.temp }}/out" >> "$GITHUB_ENV"
+          mkdir -p "${{ runner.temp }}/sdk" "${{ runner.temp }}/out"
+
+      - name: Download & extract SDK
+        run: |
+          set -eux
+          cd "$TMPDIR"
+          wget -q "$SDK_URL" -O sdk.tar.zst
+          tar --zstd -xf sdk.tar.zst
+          mv openwrt-sdk-* SDK
+
+      - name: Copy package to SDK
+        run: |
+          set -eux
+          
+          # Buat direktori package di SDK
+          mkdir -p "$TMPDIR/SDK/package/$PKG_NAME"
+
+          # Salin semua file dari workspace
+          rsync -av --exclude='.git' --exclude='node_modules' \
+                --exclude='.github' --exclude='*.ipk' --exclude='*.apk' \
+                "$GITHUB_WORKSPACE/" "$TMPDIR/SDK/package/$PKG_NAME/"
+
+      - name: Prepare feeds & make defconfig
+        run: |
+          set -eux
+          cd "$TMPDIR/SDK"
+          ./scripts/feeds update -a 2>/dev/null || true
+          ./scripts/feeds install -a 2>/dev/null || true
+          make defconfig
+
+      - name: Build package
+        run: |
+          set -eux
+          cd "$TMPDIR/SDK"
+          make package/$PKG_NAME/compile -j$(nproc) V=s
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          set -eux
+          mkdir -p "$OUTDIR"
+          find "$TMPDIR/SDK/bin" -type f -name "${PKG_NAME}_*.ipk" -exec cp -v {} "$OUTDIR"/ \; || true
+          ls -lh "$OUTDIR" || true
+          echo "count=$(ls -1 "$OUTDIR"/*.ipk 2>/dev/null | wc -l)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        if: steps.collect.outputs.count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: advan-bot-${{ needs.get_version.outputs.version }}
+          path: ${{ runner.temp }}/out/*.ipk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Switch to package branch
+        uses: actions/checkout@v4
+        with:
+          ref: package
+
+      - name: Publish to package/main
+        run: |
+          set -eux
+          mkdir -p ./main
+          rm -f ./main/${PKG_NAME}_*.ipk || true
+          echo "v${{ needs.get_version.outputs.version }}" > ./main/version
+          cp -v "$OUTDIR"/*.ipk ./main/ 2>/dev/null || true
+          
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit -m "Auto Package: ${{ github.ref_name }} v${{ needs.get_version.outputs.version }}" || echo "No changes"
+          git push
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bot-v${{ needs.get_version.outputs.version }}
+          name: Bot v${{ needs.get_version.outputs.version }}
+          files: ${{ runner.temp }}/out/*.ipk
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ github.ref_name == 'dev' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

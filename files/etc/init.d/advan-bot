@@ -1,0 +1,164 @@
+#!/bin/sh /etc/rc.common
+# Advan CPE V6 Bot - Init Script for Node.js
+# File: /etc/init.d/advan-bot
+
+USE_PROCD=1
+START=99
+STOP=01
+DEPENDS="network"
+
+# Konfigurasi
+BOT_NAME="advan-bot"
+BOT_DIR="/opt/advan-bot"
+BOT_SCRIPT="index.js"
+PID_FILE="/var/run/${BOT_NAME}.pid"
+LOCK_FILE="/var/run/${BOT_NAME}.lock"
+LOG_DIR="/var/log/advan-bot"
+NODE_BIN="/usr/bin/node"
+
+# Setup bot checker cron
+BOT_CHECKER_SCRIPT="/opt/advan-bot/bot-checker.sh"
+BOT_CHECKER_INTERVAL="*/5 * * * *"
+
+setup_bot_checker_cron() {
+    if [ -f "$BOT_CHECKER_SCRIPT" ]; then
+        if ! crontab -l 2>/dev/null | grep -q "$BOT_CHECKER_SCRIPT"; then
+            (crontab -l 2>/dev/null; echo "$BOT_CHECKER_INTERVAL $BOT_CHECKER_SCRIPT") | crontab -
+            echo "✅ Cron bot checker ditambahkan"
+        fi
+    fi
+}
+
+remove_bot_checker_cron() {
+    if [ -f "$BOT_CHECKER_SCRIPT" ]; then
+        crontab -l 2>/dev/null | grep -v "$BOT_CHECKER_SCRIPT" | crontab -
+        echo "✂️ Cron bot checker dihapus"
+    fi
+}
+
+boot() {
+    start_service
+}
+
+start_service() {
+    echo "⚙️ Memulai ${BOT_NAME} (Node.js)..."
+
+    # Buat direktori yang diperlukan
+    mkdir -p "$LOG_DIR"
+    mkdir -p "/tmp/advan_bot_cache"
+    chmod 755 "$LOG_DIR"
+
+    # Cek direktori bot
+    if [ ! -d "$BOT_DIR" ]; then
+        echo "❌ Direktori bot tidak ditemukan: $BOT_DIR"
+        return 1
+    fi
+
+    # Cek file bot
+    if [ ! -f "$BOT_DIR/$BOT_SCRIPT" ]; then
+        echo "❌ File bot tidak ditemukan: $BOT_DIR/$BOT_SCRIPT"
+        return 1
+    fi
+
+    # Setup cron checker
+    setup_bot_checker_cron
+
+    # Kill existing process if any
+    if [ -f "$PID_FILE" ]; then
+        OLD_PID=$(cat "$PID_FILE")
+        if kill -0 "$OLD_PID" 2>/dev/null; then
+            echo "⚠️ Killing existing process $OLD_PID..."
+            kill -9 "$OLD_PID" 2>/dev/null
+            sleep 1
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    # Jalankan dengan procd
+    procd_open_instance
+    procd_set_param command "$NODE_BIN" "$BOT_DIR/$BOT_SCRIPT"
+    procd_set_param respawn 300 5 10
+    procd_set_param env HOME=/tmp
+    procd_set_param env NODE_ENV=production
+    procd_set_param limits nofile="unlimited"
+    procd_set_param pidfile "$PID_FILE"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+
+    echo "✅ ${BOT_NAME} started"
+    echo "📋 Log: $LOG_DIR/bot.log"
+}
+
+stop_service() {
+    echo "🔌 Menghentikan ${BOT_NAME}..."
+
+    # Hentikan service via procd
+    procd_kill "$BOT_NAME" 2>/dev/null
+
+    # Hapus file PID dan lock
+    rm -f "$PID_FILE" "$LOCK_FILE" 2>/dev/null
+
+    # Hapus cron checker
+    remove_bot_checker_cron
+
+    echo "✅ ${BOT_NAME} stopped"
+}
+
+restart() {
+    echo "♻️ Restarting ${BOT_NAME}..."
+    stop_service
+    sleep 2
+    start_service
+    echo "✅ ${BOT_NAME} restarted"
+}
+
+reload() {
+    echo "🔄 Reloading ${BOT_NAME}..."
+    restart
+}
+
+service_triggers() {
+    procd_add_reload_trigger "advan-bot"
+}
+
+# Fungsi status
+status() {
+    if procd_running "$BOT_NAME"; then
+        echo "✅ ${BOT_NAME} is running"
+
+        # Tampilkan PID jika ada
+        if [ -f "$PID_FILE" ]; then
+            PID=$(cat "$PID_FILE")
+            echo "   PID: $PID"
+
+            # Tampilkan uptime (BusyBox compatible)
+            if [ -d "/proc/$PID" ]; then
+                UPTIME=$(ps | grep "$PID" | grep -v grep | awk '{print $4}' 2>/dev/null)
+                [ -n "$UPTIME" ] && echo "   Uptime: $UPTIME"
+            fi
+        fi
+        return 0
+    else
+        echo "❌ ${BOT_NAME} is not running"
+        return 1
+    fi
+}
+
+# Fungsi untuk melihat log
+log() {
+    if [ -f "$LOG_DIR/bot.log" ]; then
+        tail -n 50 "$LOG_DIR/bot.log"
+    else
+        echo "Log file not found: $LOG_DIR/bot.log"
+    fi
+}
+
+# Fungsi untuk follow log
+follow() {
+    if [ -f "$LOG_DIR/bot.log" ]; then
+        tail -f "$LOG_DIR/bot.log"
+    else
+        echo "Log file not found: $LOG_DIR/bot.log"
+    fi
+}

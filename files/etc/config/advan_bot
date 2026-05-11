@@ -1,0 +1,7 @@
+config advan_bot 'main'
+	option modem_ip '192.168.0.1'
+	option modem_user 'root'
+	option modem_password 'admin'
+	option bot_token ''
+	option allowed_users ''
+	option log_level 'info'
