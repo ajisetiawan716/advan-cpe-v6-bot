@@ -24,29 +24,24 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       current_version: ${{ steps.current_version.outputs.version }}
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Read version
         id: version
-        shell: bash
         run: |
           V=$(grep 'PKG_VERSION:=' ./Makefile | awk -F '=' '{gsub(/[ \t]/,"",$2); print $2}')
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "New: $V"
 
-      - name: Checkout package branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: package
 
       - name: Read current version
         id: current_version
-        shell: bash
         run: |
           CV=$(cat ./main/version 2>/dev/null | head -1 | sed 's/^v//' || echo "0")
           echo "version=$CV" >> "$GITHUB_OUTPUT"
-          echo "Current: $CV"
 
   compile:
     runs-on: ubuntu-latest
@@ -56,15 +51,12 @@ jobs:
       PKG_NAME: advan-bot
       SDK_URL: https://downloads.openwrt.org/releases/24.10.2/targets/x86/64/openwrt-sdk-24.10.2-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install prerequisites
-        env:
-          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update -qq
-          sudo apt-get -y install git wget xz-utils zstd tar rsync file
+          sudo apt-get -y install wget xz-utils zstd tar
 
       - name: Setup dirs
         run: |
@@ -85,25 +77,21 @@ jobs:
                 --exclude='.github' --exclude='*.ipk' \
                 "$GITHUB_WORKSPACE/" "$TMPDIR/SDK/package/$PKG_NAME/"
 
-      - name: Prepare feeds (minimal)
+      - name: Build (SKIP feeds, direct compile)
         run: |
           cd "$TMPDIR/SDK"
-          # HANYA update feeds yang diperlukan
-          ./scripts/feeds update packages luci 2>/dev/null || true
-          # Install hanya dependensi yang diperlukan
-          ./scripts/feeds install node 2>/dev/null || true
-          ./scripts/feeds install ca-certificates 2>/dev/null || true
-          make defconfig
-
-      - name: Build package only
-        run: |
-          cd "$TMPDIR/SDK"
-          make package/$PKG_NAME/compile -j$(nproc) V=s
+          # TIDAK PERLU feeds update/install
+          # Langsung compile paket saja (tidak ada dependensi compile)
+          make package/$PKG_NAME/compile -j$(nproc) V=s IGNORE_ERRORS=1 2>&1 || {
+            echo "Checking if package was built..."
+            find bin -name "${PKG_NAME}_*.ipk" 2>/dev/null
+          }
 
       - name: Collect artifacts
         run: |
           find "$TMPDIR/SDK/bin" -name "${PKG_NAME}_*.ipk" -exec cp -v {} "$OUTDIR"/ \;
-          ls -lh "$OUTDIR"/
+          ls -lh "$OUTDIR/" || echo "No IPK found"
+          test -f "$OUTDIR"/*.ipk || { echo "ERROR: No IPK!"; exit 1; }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -112,8 +100,7 @@ jobs:
           path: ${{ runner.temp }}/out/*.ipk
           retention-days: 30
 
-      - name: Checkout package branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: package
 
